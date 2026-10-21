@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Оборона ДЦ</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: #10141c; color: #e8edf5; font-family: system-ui, sans-serif; overflow: hidden; touch-action: none; user-select: none; }
+  #app { display: flex; flex-direction: column; height: 100%; }
+  #hud { display: flex; gap: 14px; align-items: center; padding: 6px 10px; background: #1a2030; font-weight: 700; font-size: 15px; flex-wrap: wrap; }
+  #hud .m { color: #ffd23f; } #hud .i { color: #7be08a; font-weight: 400; font-size: 13px; }
+  #dcbar { flex: 1; min-width: 120px; height: 16px; background: #000; border-radius: 4px; position: relative; overflow: hidden; }
+  #dcfill { height: 100%; background: #3ec27a; width: 100%; transition: width .1s; }
+  #dctxt { position: absolute; inset: 0; text-align: center; font-size: 12px; line-height: 16px; text-shadow: 0 0 3px #000; }
+  #pauseBtn { background: #2a3350; border: 0; color: #fff; border-radius: 6px; padding: 4px 10px; font-size: 14px; }
+  #field { flex: 1; min-height: 0; position: relative; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #info { padding: 4px 10px; background: #141a28; font-size: 13px; min-height: 26px; color: #b7c3dc; }
+  #bar { display: flex; gap: 6px; padding: 6px; background: #1a2030; overflow-x: auto; }
+  .tool { flex: 0 0 auto; min-width: 64px; padding: 6px 4px; border-radius: 8px; border: 2px solid #2d3858; background: #232b44; color: #fff; text-align: center; font-size: 11px; cursor: pointer; line-height: 1.25; }
+  .tool b { display: block; font-size: 20px; font-weight: 400; }
+  .tool.sel { border-color: #ffd23f; background: #34406b; }
+  .tool.no { opacity: .45; }
+  .ov { position: fixed; inset: 0; background: rgba(6,9,16,.88); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; padding: 20px; z-index: 5; }
+  .ov.hidden { display: none; }
+  .ov h1 { margin: 0; font-size: 28px; color: #ffd23f; }
+  .ov p { margin: 0; max-width: 480px; color: #c8d2e6; line-height: 1.45; }
+  button.big { background: #ffd23f; color: #222; border: 0; border-radius: 10px; padding: 12px 28px; font-size: 18px; font-weight: 700; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="hud">
+    <span class="m">₽ <span id="money">0</span></span><span class="i">+<span id="inc">0</span>/с</span>
+    <span>Волна <span id="wave">0</span> <span class="i">(след. через <span id="next">0</span> с)</span></span>
+    <div id="dcbar"><div id="dcfill"></div><div id="dctxt"></div></div>
+    <button id="pauseBtn">❚❚</button>
+  </div>
+  <div id="field"><canvas id="c"></canvas></div>
+  <div id="info"></div>
+  <div id="bar"></div>
+</div>
+
+<div id="start" class="ov">
+  <h1>Оборона датацентра</h1>
+  <p>Над датацентром «Яндекс» кружат вражеские БПЛА. Стреляйте сами (мышь или палец) и стройте вокруг защиту. Серверы приносят деньги, на деньги покупаются зенитки, ЗРК, РЭБ и сетки. Если датацентр падёт — это конец.</p>
+  <p style="font-size:13px">Клик/тап по занятой клетке или вне поля — выстрел. Клик по свободной клетке с выбранной постройкой — стройка. Клавиши 1–9 — выбор, Esc/P — пауза.</p>
+  <button class="big" id="go">Начать смену</button>
+  <p id="bestTxt" style="font-size:13px"></p>
+</div>
+<div id="pause" class="ov hidden"><h1>Пауза</h1><button class="big" id="resume">Продолжить</button></div>
+<div id="over" class="ov hidden"><h1>Датацентр потерян</h1><p id="stats"></p><button class="big" id="again">Ещё раз</button></div>
+
+<script>
+'use strict';
+// ---------- константы ----------
+const N = 11, CS = 56, GX = 52, GY = 52, WORLD = 720, DC0 = 4;   // сетка 11×11, датацентр 3×3 в центре
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const $ = id => document.getElementById(id);
+const lsGet = k => { try { return +localStorage.getItem(k) || 0; } catch (e) { return 0; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+let best = lsGet('dc-best');
+const rnd = (a, b) => a + Math.random() * (b - a);
+const cellC = (cx, cy) => [GX + cx * CS + CS / 2, GY + cy * CS + CS / 2];
+
+const TOOLS = [
+  { id: 'fire',   icon: '🎯', name: 'Огонь',    cost: 0,   desc: 'Стреляйте сами: тап/клик/зажать. Бесплатно.' },
+  { id: 'server', icon: '🖥', name: 'Сервер',   cost: 50,  hp: 50, desc: 'Приносит 2 ₽/с. Каждый следующий дороже.' },
+  { id: 'mg',     icon: '🔫', name: 'Пулемёт',  cost: 80,  hp: 50, range: 150, desc: 'Быстрая очередь по ближайшему БПЛА. Дальность 150.' },
+  { id: 'aa',     icon: '💥', name: 'Зенитка',  cost: 200, hp: 70, range: 215, desc: 'Сдвоенная пушка: мощные снаряды. Дальность 215.' },
+  { id: 'sam',    icon: '🚀', name: 'ЗРК',      cost: 400, hp: 70, range: 330, desc: 'Самонаводящиеся ракеты с взрывом по площади. Дальность 330.' },
+  { id: 'ew',     icon: '📡', name: 'РЭБ',      cost: 250, hp: 60, range: 135, desc: 'Глушит управление: БПЛА в зоне вдвое медленнее и мечутся.' },
+  { id: 'net',    icon: '🕸', name: 'Сетка',    cost: 25,  hp: 40, desc: 'Дёшево. Перехватывает удар БПЛА вместо того, что за ней.' },
+  { id: 'repair', icon: '🔧', name: 'Ремонт',   cost: 150, hp: 50, range: 105, desc: 'Чинит постройки и датацентр вокруг (5 HP/с).' },
+  { id: 'sell',   icon: '💲', name: 'Продать',  cost: 0,   desc: 'Клик по постройке возвращает 60% стоимости.' },
+];
+const TOOL = Object.fromEntries(TOOLS.map(t => [t.id, t]));
+const DRONES = {
+  small: { hp: 3,  spd: 65,  dmg: 18, r: 7,  reward: 5 },
+  fpv:   { hp: 2,  spd: 125, dmg: 12, r: 6,  reward: 4 },
+  heavy: { hp: 16, spd: 42,  dmg: 55, r: 11, reward: 18, splash: 45 },
+};
+
+// ---------- состояние ----------
+let G, state = 'menu', tool = 'fire';
+const ptr = { x: -999, y: -999, down: false };
+let sc = 1, ox = 0, oy = 0, dpr = 1;
+
+function reset() {
+  G = { t: 0, money: 100, wave: 0, nextWave: 6, servers: 0, spent: 0, kills: 0,
+        grid: Array.from({ length: N }, () => Array(N).fill(null)),
+        drones: [], bullets: [], fx: [], queue: [], gunCd: 0, flash: 0 };
+  G.dc = { type: 'dc', hp: 400, max: 400, cx: DC0 + 1, cy: DC0 + 1 };
+  for (let y = DC0; y < DC0 + 3; y++) for (let x = DC0; x < DC0 + 3; x++) G.grid[y][x] = G.dc;
+  setTool('fire');
+}
+const serverCost = () => 50 + 16 * G.servers;
+const costOf = id => id === 'server' ? serverCost() : TOOL[id].cost;
+
+// ---------- интерфейс ----------
+const barEl = $('bar');
+TOOLS.forEach((t, i) => {
+  const b = document.createElement('div'); b.className = 'tool'; b.id = 't_' + t.id;
+  b.innerHTML = `<b>${t.icon}</b>${i + 1}. ${t.name}<br><span class="c"></span>`;
+  b.onclick = () => setTool(t.id);
+  barEl.appendChild(b);
+});
+function setTool(id) {
+  tool = id;
+  for (const t of TOOLS) $('t_' + t.id).classList.toggle('sel', t.id === id);
+  const t = TOOL[id];
+  $('info').textContent = `${t.icon} ${t.name}${t.cost || id === 'server' ? ' — ' + costOf(id) + ' ₽' : ''}. ${t.desc}`;
+}
+function updateBar() {
+  for (const t of TOOLS) {
+    const el = $('t_' + t.id), c = costOf(t.id);
+    el.querySelector('.c').textContent = t.cost || t.id === 'server' ? c + '₽' : '';
+    el.classList.toggle('no', c > G.money && t.cost !== 0 && t.id !== 'sell');
+  }
+}
+
+// ---------- размеры ----------
+function resize() {
+  const f = $('field'), w = f.clientWidth, h = f.clientHeight;
+  dpr = Math.min(devicePixelRatio || 1, 2);
+  cv.width = w * dpr; cv.height = h * dpr;
+  sc = Math.min(w / WORLD, h / WORLD);
+  ox = (w - WORLD * sc) / 2; oy = (h - WORLD * sc) / 2;
+}
+addEventListener('resize', resize);
+
+// ---------- ввод ----------
+function worldPos(e) {
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left - ox) / sc, (e.clientY - r.top - oy) / sc];
+}
+const cellAt = (x, y) => { const cx = Math.floor((x - GX) / CS), cy = Math.floor((y - GY) / CS); return cx >= 0 && cy >= 0 && cx < N && cy < N ? [cx, cy] : null; };
+cv.addEventListener('pointerdown', e => {
+  if (state !== 'play') return;
+  [ptr.x, ptr.y] = worldPos(e);
+  ptr.down = true;
+  try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+  const c = cellAt(ptr.x, ptr.y);
+  if (c && click(c[0], c[1])) ptr.down = false;   // действие со стройкой — не стреляем
+});
+cv.addEventListener('pointermove', e => { [ptr.x, ptr.y] = worldPos(e); });
+const up = () => { ptr.down = false; };
+cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+addEventListener('keydown', e => {
+  if (e.code === 'Escape' || e.code === 'KeyP') { togglePause(); return; }
+  const d = +e.key; if (d >= 1 && d <= TOOLS.length && state === 'play') setTool(TOOLS[d - 1].id);
+});
+
+// стройка/продажа; true, если действие выполнено
+function click(cx, cy) {
+  const b = G.grid[cy][cx];
+  if (tool === 'sell') {
+    if (!b || b === G.dc) return false;
+    G.money += Math.floor(b.paid * .6); if (b.type === 'server') G.servers--;
+    G.grid[cy][cx] = null; boom(...cellC(cx, cy), 20, '#9ad'); return true;
+  }
+  if (tool === 'fire' || b) return false;
+  const cost = costOf(tool);
+  if (cost > G.money) { floatText(...cellC(cx, cy), 'не хватает ₽', '#ff8a8a'); return false; }
+  G.money -= cost;
+  const T = TOOL[tool];
+  G.grid[cy][cx] = { type: tool, hp: T.hp, max: T.hp, cd: 0, ang: -Math.PI / 2, cx, cy, paid: cost, alt: 0 };
+  if (tool === 'server') G.servers++;
+  floatText(...cellC(cx, cy), '-' + cost + '₽', '#ffd23f');
+  return true;
+}
+
+// ---------- эффекты ----------
+function boom(x, y, r, col) { G.fx.push({ k: 'boom', x, y, r, life: .35, max: .35, col: col || '#ffb347' });
+  for (let i = 0; i < 6; i++) { const a = rnd(0, 6.283), s = rnd(30, 110); G.fx.push({ k: 'p', x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: .5, max: .5, col: col || '#ffb347' }); } }
+function floatText(x, y, text, col) { G.fx.push({ k: 'txt', x, y, text, col, life: .9, max: .9 }); }
+
+// ---------- волны и БПЛА ----------
+function startWave() {
+  G.wave++;
+  const w = G.wave, n = Math.min(140, 3 + Math.floor(w * 2.1));
+  const bonus = 20 + 5 * w; G.money += bonus; floatText(WORLD / 2, 40, 'Волна ' + w + '  +' + bonus + '₽', '#ffd23f');
+  for (let i = 0; i < n; i++) {
+    const r = Math.random();
+    const type = w >= 5 && r < .15 + Math.min(.3, w * .015) ? 'heavy' : w >= 3 && r < .5 ? 'fpv' : 'small';
+    G.queue.push({ t: G.t + rnd(0, 5 + w * .4), type });
+  }
+  G.nextWave = Math.max(10, 22 - w * .6);
+}
+function targets() { const a = [G.dc, G.dc]; for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { const b = G.grid[y][x]; if (b && b !== G.dc && b.type !== 'net') a.push(b); } return a; }
+function spawnDrone(type) {
+  const T = DRONES[type], side = (Math.random() * 4) | 0, u = rnd(0, WORLD), m = -25;
+  const x = side === 0 ? u : side === 1 ? u : side === 2 ? m : WORLD - m, y = side === 0 ? m : side === 1 ? WORLD - m : u;
+  const hm = 1 + G.wave * .09;
+  const tg = targets(); const t = tg[(Math.random() * tg.length) | 0];
+  const [tx, ty] = t === G.dc ? cellC(G.dc.cx, G.dc.cy) : cellC(t.cx, t.cy);
+  G.drones.push({ type, x, y, hp: T.hp * hm, max: T.hp * hm, r: T.r, tx, ty, target: t, ph: rnd(0, 6.28), slow: 1, jam: 0, ang: 0 });
+}
+function hitBuilding(b, dmg, x, y) {
+  b.hp -= dmg; boom(x, y, 16);
+  if (b === G.dc) { G.flash = .25; if (b.hp <= 0) endGame(); return; }
+  if (b.hp <= 0) { if (G.grid[b.cy][b.cx] === b) G.grid[b.cy][b.cx] = null; if (b.type === 'server') G.servers--; boom(...cellC(b.cx, b.cy), 30, '#ff6a3d'); }
+}
+function explodeDrone(d) {
+  const T = DRONES[d.type];
+  const c = cellAt(d.x, d.y), b = c && G.grid[c[1]][c[0]];
+  if (b) hitBuilding(b, T.dmg, d.x, d.y);
+  if (T.splash) {
+    const seen = new Set([b]);
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const o = G.grid[y][x]; if (!o || seen.has(o)) continue;
+      const [px, py] = cellC(x, y); if (Math.hypot(px - d.x, py - d.y) < T.splash + 20) { seen.add(o); hitBuilding(o, T.dmg * .5, px, py); }
+    }
+    boom(d.x, d.y, T.splash, '#ff6a3d');
+  }
+  d.dead = true;
+}
+function killDrone(d) {
+  d.dead = true; const T = DRONES[d.type]; G.money += T.reward; G.kills++;
+  floatText(d.x, d.y - 10, '+' + T.reward + '₽', '#7be08a'); boom(d.x, d.y, 14, '#ffd23f');
+}
+function damage(d, dmg) { d.hp -= dmg; if (d.hp <= 0 && !d.dead) killDrone(d); }
+
+// ---------- обновление ----------
+function nearestDrone(x, y, range) {
+  let best = null, bd = range * range;
+  for (const d of G.drones) { if (d.dead) continue; const q = (d.x - x) ** 2 + (d.y - y) ** 2; if (q < bd) { bd = q; best = d; } }
+  return best;
+}
+function shoot(x, y, ang, spd, dmg, kind, target) {
+  G.bullets.push({ x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd, dmg, kind, life: kind === 'sam' ? 3 : 1.1, target, ang, spd });
+}
+function update(dt) {
+  G.t += dt;
+  G.flash = Math.max(0, G.flash - dt);
+  G.money += G.servers * 2 * dt;
+  if ((G.nextWave -= dt) <= 0) startWave();
+  for (let i = G.queue.length - 1; i >= 0; i--) if (G.queue[i].t <= G.t) { spawnDrone(G.queue[i].type); G.queue.splice(i, 1); }
+
+  // свой огонь
+  G.gunCd -= dt;
+  const [dcx, dcy] = cellC(G.dc.cx, G.dc.cy);
+  if (ptr.down && G.gunCd <= 0) {
+    G.gunCd = .17;
+    const a = Math.atan2(ptr.y - (dcy - 30), ptr.x - dcx);
+    shoot(dcx, dcy - 30, a + rnd(-.03, .03), 560, 2, 'player');
+  }
+
+  // РЭБ — сброс и применение
+  for (const d of G.drones) { d.slow = 1; d.jam = 0; }
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const b = G.grid[y][x]; if (!b || b === G.dc || b.cx !== x || b.cy !== y) continue;
+    const [bx, by] = cellC(x, y), T = TOOL[b.type];
+    if (b.type === 'ew') { for (const d of G.drones) if (Math.hypot(d.x - bx, d.y - by) < T.range) { d.slow = .5; d.jam = 1; } }
+    else if (b.type === 'repair') {
+      for (let yy = 0; yy < N; yy++) for (let xx = 0; xx < N; xx++) {
+        const o = G.grid[yy][xx]; if (!o || o.hp >= o.max) continue;
+        const [px, py] = cellC(xx, yy); if (Math.hypot(px - bx, py - by) < T.range && (o !== G.dc || (xx === G.dc.cx && yy === G.dc.cy))) o.hp = Math.min(o.max, o.hp + 5 * dt);
+      }
+    } else if (b.type === 'mg' || b.type === 'aa' || b.type === 'sam') {
+      b.cd -= dt;
+      const tg = nearestDrone(bx, by, T.range);
+      if (tg) {
+        b.ang = Math.atan2(tg.y - by, tg.x - bx);
+        if (b.cd <= 0) {
+          if (b.type === 'mg') { b.cd = .12; shoot(bx, by, b.ang + rnd(-.05, .05), 480, 1, 'mg'); }
+          else if (b.type === 'aa') { b.cd = .5; b.alt ^= 1; const s = b.alt ? 5 : -5, px = -Math.sin(b.ang) * s, py = Math.cos(b.ang) * s; shoot(bx + px, by + py, b.ang, 540, 3.2, 'aa'); }
+          else { b.cd = 1.6; shoot(bx, by, b.ang, 230, 9, 'sam', tg); }
+        }
+      }
+    }
+  }
+
+  // пули
+  for (const b of G.bullets) {
+    b.life -= dt;
+    if (b.kind === 'sam') {
+      if (!b.target || b.target.dead) b.target = nearestDrone(b.x, b.y, 400);
+      if (b.target) {
+        const want = Math.atan2(b.target.y - b.y, b.target.x - b.x);
+        let da = want - b.ang; while (da > Math.PI) da -= 6.283; while (da < -Math.PI) da += 6.283;
+        b.ang += Math.max(-5 * dt, Math.min(5 * dt, da)); b.spd = Math.min(380, b.spd + 200 * dt);
+        b.vx = Math.cos(b.ang) * b.spd; b.vy = Math.sin(b.ang) * b.spd;
+      }
+      if (Math.random() < .6) G.fx.push({ k: 'p', x: b.x, y: b.y, vx: 0, vy: 0, life: .3, max: .3, col: '#ddd' });
+    }
+    b.x += b.vx * dt; b.y += b.vy * dt;
+    for (const d of G.drones) {
+      if (d.dead || b.dead) continue;
+      if ((d.x - b.x) ** 2 + (d.y - b.y) ** 2 < (d.r + 4) ** 2) {
+        b.dead = true;
+        if (b.kind === 'sam') { boom(b.x, b.y, 45, '#ffcc66'); for (const o of G.drones) if (!o.dead && Math.hypot(o.x - b.x, o.y - b.y) < 50) damage(o, b.dmg); }
+        else damage(d, b.dmg);
+      }
+    }
+    if (b.life <= 0) b.dead = true;
+  }
+
+  // БПЛА
+  for (const d of G.drones) {
+    if (d.dead) continue;
+    if (d.target && d.target !== G.dc && G.grid[d.target.cy][d.target.cx] !== d.target) { d.target = G.dc; [d.tx, d.ty] = cellC(G.dc.cx, G.dc.cy); }
+    d.ph += dt * (3 + d.jam * 6);
+    const T = DRONES[d.type], dx = d.tx - d.x, dy = d.ty - d.y, dist = Math.hypot(dx, dy) || 1;
+    let ux = dx / dist, uy = dy / dist;
+    const wob = Math.sin(d.ph) * (d.type === 'fpv' ? .25 : .08) + d.jam * Math.sin(d.ph * 1.7) * .8;
+    const vx = ux - uy * wob, vy = uy + ux * wob, vl = Math.hypot(vx, vy);
+    d.x += vx / vl * T.spd * d.slow * dt; d.y += vy / vl * T.spd * d.slow * dt; d.ang = Math.atan2(vy, vx);
+    const c = cellAt(d.x, d.y);
+    if (c && G.grid[c[1]][c[0]]) explodeDrone(d);
+    else if (dist < 6) explodeDrone(d);
+  }
+  G.drones = G.drones.filter(d => !d.dead); G.bullets = G.bullets.filter(b => !b.dead);
+
+  for (const f of G.fx) { f.life -= dt; if (f.k === 'p') { f.x += f.vx * dt; f.y += f.vy * dt; } else if (f.k === 'txt') f.y -= 22 * dt; }
+  G.fx = G.fx.filter(f => f.life > 0);
+  if (G.fx.length > 400) G.fx.splice(0, G.fx.length - 400);
+}
+
+// ---------- отрисовка ----------
+function rect(x, y, w, h, c) { ctx.fillStyle = c; ctx.fillRect(x, y, w, h); }
+function drawBuilding(b, cx, cy) {
+  const [x, y] = cellC(cx, cy), t = G.t;
+  ctx.save(); ctx.translate(x, y);
+  switch (b.type) {
+    case 'server':
+      rect(-17, -22, 34, 44, '#2b3244'); rect(-15, -20, 30, 40, '#3a445e');
+      for (let i = 0; i < 5; i++) { rect(-13, -18 + i * 8, 26, 6, '#222a3c'); rect(8, -16 + i * 8, 3, 2, Math.sin(t * 6 + i * 2 + cx) > 0 ? '#5cf08a' : '#1d5a36'); rect(-11, -16 + i * 8, 3, 2, i % 2 ? '#e8b04a' : '#4aa3e8'); }
+      break;
+    case 'mg': case 'aa': case 'sam': {
+      ctx.fillStyle = '#3d4a3a'; ctx.beginPath(); ctx.arc(0, 0, b.type === 'mg' ? 14 : 18, 0, 6.283); ctx.fill();
+      ctx.strokeStyle = '#222'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.rotate(b.ang);
+      if (b.type === 'mg') rect(0, -2, 22, 4, '#999');
+      else if (b.type === 'aa') { rect(0, -7, 26, 4, '#aaa'); rect(0, 3, 26, 4, '#aaa'); rect(-4, -9, 10, 18, '#5a6a55'); }
+      else { rect(-6, -10, 26, 20, '#6a7a60'); rect(2, -8, 22, 5, '#cfd5cf'); rect(2, 3, 22, 5, '#cfd5cf'); rect(22, -8, 4, 5, '#d94141'); rect(22, 3, 4, 5, '#d94141'); }
+      break; }
+    case 'ew': {
+      rect(-5, 0, 10, 20, '#555'); rect(-14, 18, 28, 5, '#444');
+      ctx.strokeStyle = '#7ec8e3'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, -4, 12, 3.6, 5.8); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, -4, 6, 3.6, 5.8); ctx.stroke();
+      const r = 18 + (t * 40 % 22); ctx.strokeStyle = `rgba(126,200,227,${1 - (r - 18) / 22})`; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0, -4, r, 0, 6.283); ctx.stroke();
+      break; }
+    case 'net':
+      ctx.strokeStyle = '#d8d8c8'; ctx.lineWidth = 1.5;
+      for (let i = -24; i <= 24; i += 8) { ctx.beginPath(); ctx.moveTo(i, -24); ctx.lineTo(i, 24); ctx.moveTo(-24, i); ctx.lineTo(24, i); ctx.stroke(); }
+      rect(-26, -26, 4, 4, '#777'); rect(22, -26, 4, 4, '#777'); rect(-26, 22, 4, 4, '#777'); rect(22, 22, 4, 4, '#777');
+      break;
+    case 'repair':
+      rect(-18, -14, 36, 28, '#e8e8e8'); rect(-4, -10, 8, 20, '#3ec27a'); rect(-10, -4, 20, 8, '#3ec27a');
+      rect(-18, 14, 36, 4, '#888');
+      break;
+  }
+  ctx.restore();
+  if (b.hp < b.max) { rect(x - 20, y + 24, 40, 5, '#000'); rect(x - 19, y + 25, 38 * Math.max(0, b.hp / b.max), 3, b.hp / b.max < .35 ? '#e05a5a' : '#3ec27a'); }
+}
+function drawDC() {
+  const x0 = GX + DC0 * CS, y0 = GY + DC0 * CS, w = CS * 3;
+  rect(x0 + 4, y0 + 4, w - 8, w - 8, '#2a2f3d'); rect(x0 + 8, y0 + 8, w - 16, w - 16, '#4a5266');
+  rect(x0 + 8, y0 + 8, w - 16, 10, '#5b647c');
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 2; j++) {   // вентиляторы на крыше
+    const fx = x0 + 28 + i * 34, fy = y0 + 118 + j * 0; ctx.fillStyle = '#2a2f3d'; ctx.beginPath(); ctx.arc(fx, y0 + 40 + j * 40, 13, 0, 6.283); ctx.fill();
+    ctx.strokeStyle = '#8a93ab'; ctx.lineWidth = 2; const a = G.t * 6 + i + j; ctx.beginPath(); ctx.moveTo(fx + Math.cos(a) * 10, y0 + 40 + j * 40 + Math.sin(a) * 10); ctx.lineTo(fx - Math.cos(a) * 10, y0 + 40 + j * 40 - Math.sin(a) * 10); ctx.stroke();
+  }
+  rect(x0 + 24, y0 + 112, w - 48, 36, '#d94141'); rect(x0 + 24, y0 + 112, w - 48, 4, '#ff7a7a');
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 15px system-ui'; ctx.textAlign = 'center'; ctx.fillText('ЯНДЕКС ДЦ', x0 + w / 2, y0 + 136);
+  const f = G.dc.hp / G.dc.max;
+  if (f < .6) for (let i = 0; i < 3; i++) { ctx.fillStyle = `rgba(40,40,40,${.35 + .2 * Math.sin(G.t * 3 + i)})`; ctx.beginPath(); ctx.arc(x0 + 40 + i * 44 + Math.sin(G.t * 2 + i) * 4, y0 + 30 - (G.t * 20 + i * 15) % 30, 12 + i * 2, 0, 6.283); ctx.fill(); }
+}
+function drawDrone(d) {
+  ctx.save(); ctx.translate(d.x, d.y);
+  if (d.type === 'heavy') {   // «летающее крыло»
+    ctx.rotate(d.ang);
+    ctx.fillStyle = '#6b7060'; ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(-12, -14); ctx.lineTo(-8, 0); ctx.lineTo(-12, 14); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#2a2d26'; ctx.lineWidth = 1.5; ctx.stroke();
+    rect(-6, -2, 10, 4, '#a33');
+  } else {
+    const r = d.r;
+    ctx.fillStyle = '#33382f'; ctx.fillRect(-r * .5, -r * .5, r, r);
+    ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(-r, -r); ctx.lineTo(r, r); ctx.moveTo(r, -r); ctx.lineTo(-r, r); ctx.stroke();
+    for (const [px, py] of [[-r, -r], [r, -r], [-r, r], [r, r]]) { ctx.fillStyle = Math.sin(G.t * 40 + px) > 0 ? '#bbb' : '#777'; ctx.beginPath(); ctx.ellipse(px, py, r * .6, r * .25, G.t * 30, 0, 6.283); ctx.fill(); }
+    rect(-1, -1, 2, 2, d.type === 'fpv' ? '#ff4040' : '#ffd23f');
+  }
+  ctx.restore();
+  if (d.hp < d.max) { rect(d.x - 10, d.y - d.r - 8, 20, 3, '#000'); rect(d.x - 10, d.y - d.r - 8, 20 * Math.max(0, d.hp / d.max), 3, '#e05a5a'); }
+}
+function render() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.fillStyle = '#10141c'; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.setTransform(dpr * sc, 0, 0, dpr * sc, dpr * ox, dpr * oy);
+  rect(0, 0, WORLD, WORLD, '#27382c');
+  for (let i = 0; i < 60; i++) rect((i * 97) % WORLD, (i * 193) % WORLD, 3, 3, '#2f4535');   // травка
+  rect(GX - 4, GY - 4, N * CS + 8, N * CS + 8, '#3a3f4a'); rect(GX, GY, N * CS, N * CS, '#4a4f5c');
+  ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 1;
+  for (let i = 0; i <= N; i++) { ctx.beginPath(); ctx.moveTo(GX + i * CS, GY); ctx.lineTo(GX + i * CS, GY + N * CS); ctx.moveTo(GX, GY + i * CS); ctx.lineTo(GX + N * CS, GY + i * CS); ctx.stroke(); }
+  drawDC();
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { const b = G.grid[y][x]; if (b && b !== G.dc) drawBuilding(b, x, y); }
+
+  // подсветка клетки + радиус
+  const c = cellAt(ptr.x, ptr.y);
+  if (c && tool !== 'fire') {
+    const [x, y] = cellC(c[0], c[1]), occ = G.grid[c[1]][c[0]];
+    const ok = tool === 'sell' ? occ && occ !== G.dc : !occ && costOf(tool) <= G.money;
+    ctx.fillStyle = ok ? 'rgba(90,255,140,.25)' : 'rgba(255,90,90,.2)'; ctx.fillRect(GX + c[0] * CS, GY + c[1] * CS, CS, CS);
+    if (TOOL[tool].range && !occ) { ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, TOOL[tool].range, 0, 6.283); ctx.stroke(); }
+  }
+  for (const d of G.drones) drawDrone(d);
+  for (const b of G.bullets) {
+    if (b.kind === 'sam') { ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.ang); rect(-6, -2, 12, 4, '#eee'); rect(4, -2, 3, 4, '#d94141'); ctx.restore(); }
+    else { ctx.fillStyle = b.kind === 'player' ? '#fff27a' : b.kind === 'aa' ? '#ffb347' : '#ffe9a0'; ctx.fillRect(b.x - 2, b.y - 2, 4, 4); }
+  }
+  for (const f of G.fx) {
+    const a = f.life / f.max;
+    if (f.k === 'boom') { ctx.globalAlpha = a * .8; ctx.fillStyle = f.col; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (1.2 - a * .6), 0, 6.283); ctx.fill(); ctx.globalAlpha = 1; }
+    else if (f.k === 'p') { ctx.globalAlpha = a; rect(f.x - 1.5, f.y - 1.5, 3, 3, f.col); ctx.globalAlpha = 1; }
+    else { ctx.globalAlpha = Math.min(1, a * 1.5); ctx.fillStyle = f.col; ctx.font = 'bold 14px system-ui'; ctx.textAlign = 'center'; ctx.fillText(f.text, f.x, f.y); ctx.globalAlpha = 1; }
+  }
+  if (G.flash > 0) { ctx.fillStyle = `rgba(255,60,60,${G.flash})`; ctx.fillRect(0, 0, WORLD, WORLD); }
+  if (tool === 'fire' && ptr.x > -900) { ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(ptr.x, ptr.y, 9, 0, 6.283); ctx.moveTo(ptr.x - 14, ptr.y); ctx.lineTo(ptr.x + 14, ptr.y); ctx.moveTo(ptr.x, ptr.y - 14); ctx.lineTo(ptr.x, ptr.y + 14); ctx.stroke(); }
+}
+function hud() {
+  $('money').textContent = Math.floor(G.money); $('inc').textContent = G.servers * 2;
+  $('wave').textContent = G.wave; $('next').textContent = Math.max(0, Math.ceil(G.nextWave));
+  const f = Math.max(0, G.dc.hp / G.dc.max);
+  $('dcfill').style.width = f * 100 + '%'; $('dcfill').style.background = f < .3 ? '#e05a5a' : f < .6 ? '#e8b04a' : '#3ec27a';
+  $('dctxt').textContent = 'Датацентр ' + Math.ceil(Math.max(0, G.dc.hp)) + ' / ' + G.dc.max;
+  updateBar();
+}
+
+// ---------- ход игры ----------
+function mmss(s) { return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(Math.floor(s % 60)).padStart(2, '0'); }
+function endGame() {
+  state = 'over';
+  const rec = G.wave > best; if (rec) { best = G.wave; lsSet('dc-best', best); }
+  $('stats').innerHTML = `Продержались: <b>${mmss(G.t)}</b><br>Волн отражено: <b>${Math.max(0, G.wave - 1)}</b>${rec ? ' — новый рекорд!' : ''}<br>Сбито БПЛА: <b>${G.kills}</b>`;
+  $('over').classList.remove('hidden');
+}
+function begin() {
+  reset(); resize(); state = 'play';
+  for (const id of ['start', 'over', 'pause']) $(id).classList.add('hidden');
+}
+function togglePause() {
+  if (state === 'play') { state = 'pause'; $('pause').classList.remove('hidden'); }
+  else if (state === 'pause') { state = 'play'; $('pause').classList.add('hidden'); }
+}
+$('go').onclick = begin; $('again').onclick = begin; $('resume').onclick = togglePause; $('pauseBtn').onclick = togglePause;
+document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') togglePause(); });
+$('bestTxt').textContent = best ? 'Рекорд: ' + best + ' волн' : '';
+
+let last = 0;
+function frame(ts) {
+  const dt = Math.min(.05, (ts - last) / 1000 || 0); last = ts;
+  if (state === 'play') update(dt);
+  if (G) { render(); hud(); }
+  requestAnimationFrame(frame);
+}
+reset(); resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
