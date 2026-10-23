@@ -73,7 +73,7 @@ const TOOLS = [
   { id: 'sam',    icon: '🚀', name: 'ЗРК',      cost: 400, hp: 70, range: 330, desc: 'Самонаводящиеся ракеты с взрывом по площади. Дальность 330.' },
   { id: 'ew',     icon: '📡', name: 'РЭБ',      cost: 250, hp: 60, range: 135, desc: 'Глушит управление: БПЛА в зоне вдвое медленнее и мечутся.' },
   { id: 'net',    icon: '🕸', name: 'Сетка',    cost: 25,  hp: 40, desc: 'Дёшево. Перехватывает удар БПЛА вместо того, что за ней.' },
-  { id: 'repair', icon: '🔧', name: 'Ремонт',   cost: 150, hp: 50, range: 105, desc: 'Чинит постройки и датацентр вокруг (5 HP/с).' },
+  { id: 'repair', icon: '🔧', name: 'Ремонт',   cost: 150, hp: 50, range: 110, desc: 'Чинит постройки и датацентр рядом (6 HP/с). Для датацентра считается расстояние до его края.' },
   { id: 'sell',   icon: '💲', name: 'Продать',  cost: 0,   desc: 'Клик по постройке возвращает 60% стоимости.' },
 ];
 const TOOL = Object.fromEntries(TOOLS.map(t => [t.id, t]));
@@ -264,9 +264,16 @@ function update(dt) {
     const [bx, by] = cellC(x, y), T = TOOL[b.type];
     if (b.type === 'ew') { for (const d of G.drones) if (Math.hypot(d.x - bx, d.y - by) < T.range) { d.slow = .5; d.jam = 1; } }
     else if (b.type === 'repair') {
+      const healed = new Set();
       for (let yy = 0; yy < N; yy++) for (let xx = 0; xx < N; xx++) {
-        const o = G.grid[yy][xx]; if (!o || o.hp >= o.max) continue;
-        const [px, py] = cellC(xx, yy); if (Math.hypot(px - bx, py - by) < T.range && (o !== G.dc || (xx === G.dc.cx && yy === G.dc.cy))) o.hp = Math.min(o.max, o.hp + 5 * dt);
+        const o = G.grid[yy][xx]; if (!o || o.hp >= o.max || healed.has(o)) continue;
+        const [px, py] = cellC(xx, yy);
+        // до датацентра считаем расстояние до ближайшей точки его 3×3 клеток, а не до центра
+        const dd = o === G.dc ? Math.hypot(Math.max(GX + DC0 * CS - bx, 0, bx - (GX + (DC0 + 3) * CS)), Math.max(GY + DC0 * CS - by, 0, by - (GY + (DC0 + 3) * CS))) : Math.hypot(px - bx, py - by);
+        if (dd < T.range) {
+          healed.add(o); o.hp = Math.min(o.max, o.hp + 6 * dt);
+          if (Math.random() < dt * 3) G.fx.push({ k: 'txt', x: o === G.dc ? bx + rnd(-30, 30) : px + rnd(-10, 10), y: o === G.dc ? by - 20 : py - 14, text: '+', col: '#6bff9a', life: .7, max: .7 });
+        }
       }
     } else if (b.type === 'mg' || b.type === 'aa' || b.type === 'sam') {
       b.cd -= dt; b.fl = Math.max(0, (b.fl || 0) - dt); b.rc = Math.max(0, (b.rc || 0) - dt * 10);
