@@ -71,7 +71,7 @@ const TOOLS = [
   { id: 'mg',     icon: '🔫', name: 'Пулемёт',  cost: 80,  hp: 50, range: 150, desc: 'Быстрая очередь по ближайшему БПЛА. Дальность 150.' },
   { id: 'aa',     icon: '💥', name: 'Зенитка',  cost: 200, hp: 70, range: 215, desc: 'Сдвоенная пушка: мощные снаряды. Дальность 215.' },
   { id: 'sam',    icon: '🚀', name: 'ЗРК',      cost: 400, hp: 70, range: 330, desc: 'Самонаводящиеся ракеты с взрывом по площади. Дальность 330.' },
-  { id: 'ew',     icon: '📡', name: 'РЭБ',      cost: 250, hp: 60, range: 135, desc: 'Глушит управление: БПЛА в зоне вдвое медленнее и мечутся.' },
+  { id: 'ew',     icon: '📡', name: 'РЭБ',      cost: 250, hp: 60, range: 230, desc: 'Большая зона, слабое влияние: БПЛА внутри на ~30% медленнее и немного рыскают.' },
   { id: 'net',    icon: '🕸', name: 'Сетка',    cost: 25,  hp: 40, desc: 'Дёшево. Перехватывает удар БПЛА вместо того, что за ней.' },
   { id: 'repair', icon: '🔧', name: 'Ремонт',   cost: 150, hp: 50, range: 110, desc: 'Чинит постройки и датацентр рядом (6 HP/с). Для датацентра считается расстояние до его края.' },
   { id: 'up',     icon: '⬆', name: 'Улучшить', cost: 0,   desc: 'Клик по любой постройке или датацентру повышает уровень (постройки до 4, датацентр до 5). Чем выше уровень, тем дороже.' },
@@ -283,7 +283,7 @@ function update(dt) {
     const b = G.grid[y][x]; if (!b || b === G.dc || b.cx !== x || b.cy !== y) continue;
     const [bx, by] = cellC(x, y), T = TOOL[b.type];
     if (b.type === 'server') inc += 2 * (1 + .6 * (lvOf(b) - 1));
-    else if (b.type === 'ew') { for (const d of G.drones) if (Math.hypot(d.x - bx, d.y - by) < rangeOf(b)) { d.slow = Math.min(d.slow, .5 - .07 * (lvOf(b) - 1)); d.jam = 1; } }
+    else if (b.type === 'ew') { for (const d of G.drones) if (Math.hypot(d.x - bx, d.y - by) < rangeOf(b)) { d.slow = Math.min(d.slow, .72 - .05 * (lvOf(b) - 1)); d.jam = .4; } }
     else if (b.type === 'repair') {
       const healed = new Set();
       for (let yy = 0; yy < N; yy++) for (let xx = 0; xx < N; xx++) {
@@ -428,7 +428,10 @@ function drawBuilding(b, cx, cy) {
       ctx.fillStyle = '#8fb8e8'; ctx.beginPath(); ctx.ellipse(1, -5, 11, 6, -.4, 0, 6.283); ctx.fill();
       rect(-1, -16, 2, 10, '#e8b04a'); ctx.fillStyle = '#ff4d4d'; ctx.beginPath(); ctx.arc(0, -17, 2.4 + (Math.sin(t * 8) > 0 ? .8 : 0), 0, 6.283); ctx.fill();
       ctx.restore();
-      for (let k = 0; k < 2; k++) { const r = 16 + ((t * 40 + k * 14) % 28); ctx.strokeStyle = `rgba(90,220,255,${1 - (r - 16) / 28})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, -5, r, 0, 6.283); ctx.stroke(); }
+      const R = rangeOf(b);
+      ctx.fillStyle = 'rgba(90,220,255,.06)'; ctx.beginPath(); ctx.arc(0, -5, R, 0, 6.283); ctx.fill();
+      ctx.strokeStyle = 'rgba(90,220,255,.3)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0, -5, R, 0, 6.283); ctx.stroke();
+      for (let k = 0; k < 2; k++) { const f = ((t * .5 + k * .5) % 1), r = 16 + f * (R - 16); ctx.strokeStyle = `rgba(90,220,255,${(1 - f) * .6})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, -5, r, 0, 6.283); ctx.stroke(); }
       break; }
     case 'net': {
       ctx.strokeStyle = 'rgba(235,235,200,.9)'; ctx.lineWidth = 1.5;
