@@ -103,6 +103,12 @@ const baseCost = b => b.type === 'server' ? 50 : TOOL[b.type].cost;
 const upCost = b => b === G.dc ? 300 * G.dcLv : Math.round(baseCost(b) * .9 * lvOf(b));
 const rangeOf = b => TOOL[b.type].range * (1 + (b.type === 'ew' ? .15 : b.type === 'repair' ? .1 : .08) * (lvOf(b) - 1));
 const dmgMul = b => 1 + .35 * (lvOf(b) - 1), rateMul = b => 1 + .2 * (lvOf(b) - 1);
+const ABIL = {
+  mg: 'Критические попадания: 15% шанс ×3 урона', aa: 'Бронебойный выстрел: 20% шанс пробить насквозь', sam: 'Кассетный удар: 25% шанс бить по большой площади',
+  ew: 'Перехват управления: БПЛА врезаются друг в друга', server: 'Майнинг-бонус: +40 ₽ каждые 8 с', net: 'Ловушка: при разрушении бьёт шрапнелью',
+  repair: 'Реанимация: раз в 10 с лечит всех рядом на 20%', dc: 'Залп солдата: веер из 7 пуль каждые 6 с',
+};
+const isMax = b => b !== G.dc && lvOf(b) >= MAXLV;
 const serverCost = () => 50 + 16 * G.servers;
 const costOf = id => id === 'server' ? serverCost() : TOOL[id].cost;
 
@@ -220,7 +226,8 @@ function spawnDrone(type) {
 function hitBuilding(b, dmg, x, y) {
   b.hp -= dmg; boom(x, y, 16);
   if (b === G.dc) { G.flash = .25; if (b.hp <= 0) endGame(); return; }
-  if (b.hp <= 0) { if (G.grid[b.cy][b.cx] === b) G.grid[b.cy][b.cx] = null; if (b.type === 'server') G.servers--; boom(...cellC(b.cx, b.cy), 30, '#ff6a3d'); }
+  if (b.hp <= 0) { if (b.type === 'net' && isMax(b)) { const [nx, ny] = cellC(b.cx, b.cy); boom(nx, ny, 70, '#9fe8ff'); for (const o of G.drones) if (!o.dead && Math.hypot(o.x - nx, o.y - ny) < 90) damage(o, 8); }
+    if (G.grid[b.cy][b.cx] === b) G.grid[b.cy][b.cx] = null; if (b.type === 'server') G.servers--; boom(...cellC(b.cx, b.cy), 30, '#ff6a3d'); }
 }
 function explodeDrone(d) {
   const T = DRONES[d.type];
@@ -248,8 +255,8 @@ function nearestDrone(x, y, range) {
   for (const d of G.drones) { if (d.dead) continue; const q = (d.x - x) ** 2 + (d.y - y) ** 2; if (q < bd) { bd = q; best = d; } }
   return best;
 }
-function shoot(x, y, ang, spd, dmg, kind, target) {
-  G.bullets.push({ x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd, dmg, kind, life: kind === 'sam' ? 3 : 1.1, target, ang, spd });
+function shoot(x, y, ang, spd, dmg, kind, target, extra) {
+  G.bullets.push(Object.assign({ x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd, dmg, kind, life: kind === 'sam' ? 3 : 1.1, target, ang, spd }, extra));
 }
 function update(dt) {
   G.t += dt;
@@ -276,23 +283,37 @@ function update(dt) {
     }
   }
 
+  if (G.dcLv >= DC_MAXLV) {
+    G.volT = (G.volT ?? 4) - dt;
+    if (G.volT <= 0 && nearestDrone(sx, sy, 320)) {
+      G.volT = 6; S.fl = .15; S.rc = 1; floatText(sx, sy - 44, 'ЗАЛП!', '#ffd23f');
+      const base = S.ang;
+      for (let i = -3; i <= 3; i++) shoot(sx + Math.cos(base) * 34, sy + Math.sin(base) * 34, base + i * .1, 600, 2.4 * (1 + .3 * (G.dcLv - 1)), 'player');
+    }
+  }
+
   // РЭБ — сброс и применение
   let inc = 1 * (G.dcLv - 1);   // датацентр с уровнем сам приносит доход
   for (const d of G.drones) { d.slow = 1; d.jam = 0; }
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
     const b = G.grid[y][x]; if (!b || b === G.dc || b.cx !== x || b.cy !== y) continue;
     const [bx, by] = cellC(x, y), T = TOOL[b.type];
-    if (b.type === 'server') inc += 2 * (1 + .6 * (lvOf(b) - 1));
-    else if (b.type === 'ew') { for (const d of G.drones) if (Math.hypot(d.x - bx, d.y - by) < rangeOf(b)) { d.slow = Math.min(d.slow, .72 - .05 * (lvOf(b) - 1)); d.jam = .4; } }
+    if (b.type === 'server') { inc += 2 * (1 + .6 * (lvOf(b) - 1)); if (isMax(b) && (b.bt = (b.bt ?? 6) - dt) <= 0) { b.bt = 8; G.money += 40; floatText(bx, by - 28, '+40₽ майнинг', '#7be08a'); } }
+    else if (b.type === 'ew') { for (const d of G.drones) if (Math.hypot(d.x - bx, d.y - by) < rangeOf(b)) { d.slow = Math.min(d.slow, .72 - .05 * (lvOf(b) - 1)); d.jam = .4;
+      if (isMax(b) && !d.ram && !(d.ramCd > 0) && Math.random() < dt * .12) {   // уникальная способность максимального уровня
+        let o = null, bd = 220 * 220; for (const q of G.drones) { if (q === d || q.dead) continue; const dd = (q.x - d.x) ** 2 + (q.y - d.y) ** 2; if (dd < bd) { bd = dd; o = q; } }
+        if (o) { d.ram = o; floatText(d.x, d.y - 14, 'ПЕРЕХВАТ!', '#7ee8ff'); }
+      } } }
     else if (b.type === 'repair') {
-      const healed = new Set();
+      const healed = new Set(); const pulse = isMax(b) && (b.pt = (b.pt ?? 8) - dt) <= 0; if (pulse) b.pt = 10;
       for (let yy = 0; yy < N; yy++) for (let xx = 0; xx < N; xx++) {
         const o = G.grid[yy][xx]; if (!o || o.hp >= o.max || healed.has(o)) continue;
         const [px, py] = cellC(xx, yy);
         // до датацентра считаем расстояние до ближайшей точки его 3×3 клеток, а не до центра
         const dd = o === G.dc ? Math.hypot(Math.max(GX + DC0 * CS - bx, 0, bx - (GX + (DC0 + 3) * CS)), Math.max(GY + DC0 * CS - by, 0, by - (GY + (DC0 + 3) * CS))) : Math.hypot(px - bx, py - by);
         if (dd < rangeOf(b)) {
-          healed.add(o); o.hp = Math.min(o.max, o.hp + 6 * (1 + .5 * (lvOf(b) - 1)) * dt);
+          healed.add(o); o.hp = Math.min(o.max, o.hp + 6 * (1 + .5 * (lvOf(b) - 1)) * dt + (pulse ? o.max * .2 : 0));
+          if (pulse) { boom(px, py, 22, '#6bff9a'); }
           if (Math.random() < dt * 3) G.fx.push({ k: 'txt', x: o === G.dc ? bx + rnd(-30, 30) : px + rnd(-10, 10), y: o === G.dc ? by - 20 : py - 14, text: '+', col: '#6bff9a', life: .7, max: .7 });
         }
       }
@@ -302,9 +323,9 @@ function update(dt) {
       if (tg) {
         b.ang = Math.atan2(tg.y - by, tg.x - bx);
         if (b.cd <= 0) {
-          if (b.type === 'mg') { b.cd = .12 / rateMul(b); b.fl = .06; b.rc = 1; shoot(bx, by, b.ang + rnd(-.05, .05), 480, 1 * dmgMul(b), 'mg'); }
-          else if (b.type === 'aa') { b.cd = .5 / rateMul(b); b.fl = .07; b.rc = 1; b.alt ^= 1; const s = b.alt ? 5 : -5, px = -Math.sin(b.ang) * s, py = Math.cos(b.ang) * s; shoot(bx + px, by + py, b.ang, 540, 3.2 * dmgMul(b), 'aa'); }
-          else { b.cd = 1.6 / rateMul(b); b.fl = .12; b.rc = 1; shoot(bx, by, b.ang, 230, 9 * dmgMul(b), 'sam', tg); }
+          if (b.type === 'mg') { b.cd = .12 / rateMul(b); b.fl = .06; b.rc = 1; { const crit = isMax(b) && Math.random() < .15; shoot(bx, by, b.ang + rnd(-.05, .05), 480, (crit ? 3 : 1) * dmgMul(b), 'mg', null, crit ? { crit: true } : null); } }
+          else if (b.type === 'aa') { b.cd = .5 / rateMul(b); b.fl = .07; b.rc = 1; b.alt ^= 1; const s = b.alt ? 5 : -5, px = -Math.sin(b.ang) * s, py = Math.cos(b.ang) * s; { const pierce = isMax(b) && Math.random() < .2; shoot(bx + px, by + py, b.ang, pierce ? 640 : 540, 3.2 * dmgMul(b), 'aa', null, pierce ? { pierce: true, hit: new Set(), life: 1.6 } : null); } }
+          else { b.cd = 1.6 / rateMul(b); b.fl = .12; b.rc = 1; shoot(bx, by, b.ang, 230, 9 * dmgMul(b), 'sam', tg, isMax(b) && Math.random() < .25 ? { big: true } : null); }
         }
       }
     }
@@ -329,9 +350,14 @@ function update(dt) {
     for (const d of G.drones) {
       if (d.dead || b.dead) continue;
       if ((d.x - b.x) ** 2 + (d.y - b.y) ** 2 < (d.r + 4) ** 2) {
+        if (b.pierce) { if (!b.hit.has(d)) { b.hit.add(d); damage(d, b.dmg); boom(d.x, d.y, 9, '#7ee8ff'); } continue; }
         b.dead = true;
-        if (b.kind === 'sam') { boom(b.x, b.y, 45, '#ffcc66'); for (const o of G.drones) if (!o.dead && Math.hypot(o.x - b.x, o.y - b.y) < 50) damage(o, b.dmg); }
-        else damage(d, b.dmg);
+        if (b.kind === 'sam') {
+          const R = b.big ? 100 : 50, D = b.big ? b.dmg * 1.6 : b.dmg;
+          boom(b.x, b.y, b.big ? 100 : 45, b.big ? '#ff7a3d' : '#ffcc66'); if (b.big) floatText(b.x, b.y - 16, 'КАССЕТА!', '#ff9a3d');
+          for (const o of G.drones) if (!o.dead && Math.hypot(o.x - b.x, o.y - b.y) < R) damage(o, D);
+        }
+        else { if (b.crit) { floatText(d.x, d.y - 16, 'КРИТ!', '#ff5050'); boom(d.x, d.y, 12, '#ff5050'); } damage(d, b.dmg); }
       }
     }
     if (b.life <= 0) b.dead = true;
@@ -341,6 +367,18 @@ function update(dt) {
   for (const d of G.drones) {
     if (d.dead) continue;
     if (d.target && d.target !== G.dc && G.grid[d.target.cy][d.target.cx] !== d.target) { d.target = G.dc; [d.tx, d.ty] = cellC(G.dc.cx, G.dc.cy); }
+    d.ramCd = Math.max(0, (d.ramCd || 0) - dt);
+    if (d.ram) {
+      if (d.ram.dead) d.ram = null;
+      else {
+        d.tx = d.ram.x; d.ty = d.ram.y;
+        if (Math.hypot(d.ram.x - d.x, d.ram.y - d.y) < d.r + d.ram.r + 2) {
+          const o = d.ram; d.ram = null; d.ramCd = 4; boom((d.x + o.x) / 2, (d.y + o.y) / 2, 24, '#7ee8ff'); floatText(d.x, d.y - 14, 'ВРЕЗАЛСЯ!', '#7ee8ff');
+          damage(d, 10); damage(o, 10);
+          if (d.dead) continue;
+        }
+      }
+    }
     d.ph += dt * (3 + d.jam * 6);
     const T = DRONES[d.type], dx = d.tx - d.x, dy = d.ty - d.y, dist = Math.hypot(dx, dy) || 1;
     let ux = dx / dist, uy = dy / dist;
@@ -447,6 +485,7 @@ function drawBuilding(b, cx, cy) {
       break; }
   }
   ctx.restore();
+  if (isMax(b)) { ctx.strokeStyle = `rgba(255,210,63,${.55 + .25 * Math.sin(G.t * 4 + cx)})`; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(x, y, 30, 0, 6.283); ctx.stroke(); }
   for (let i = 1; i < lvOf(b); i++) { const px = x - 22 + (i - 1) * 9, py = y - 26; ctx.fillStyle = '#5a3d00'; ctx.beginPath(); ctx.arc(px, py, 4.5, 0, 6.283); ctx.fill(); ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(px, py, 3.2, 0, 6.283); ctx.fill(); }
   if (b.hp < b.max) { rect(x - 20, y + 26, 40, 5, '#000'); rect(x - 19, y + 27, 38 * Math.max(0, b.hp / b.max), 3, b.hp / b.max < .35 ? '#e05a5a' : '#3ec27a'); }
 }
@@ -491,6 +530,7 @@ function drawDC() {
   for (const [t, c] of parts) { ctx.fillStyle = c; ctx.fillText(t, tx, y0 + 149); tx += ctx.measureText(t).width; }
   ctx.textAlign = 'center';
   rect(x0 + w - 24, y0 + 40, 3, 26, '#555'); ctx.fillStyle = Math.sin(G.t * 5) > 0 ? '#ff4d4d' : '#6a2323'; ctx.beginPath(); ctx.arc(x0 + w - 22.5, y0 + 40, 3, 0, 6.283); ctx.fill();
+  if (G.dcLv >= DC_MAXLV) { ctx.strokeStyle = `rgba(255,210,63,${.6 + .3 * Math.sin(G.t * 4)})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.roundRect(x0 - 2, y0 - 2, w + 4, w + 4, 10); ctx.stroke(); }
   for (let i = 1; i < G.dcLv; i++) { const px = x0 + 20 + (i - 1) * 14, py = y0 + 62; ctx.fillStyle = '#5a3d00'; ctx.beginPath(); ctx.arc(px, py, 6, 0, 6.283); ctx.fill(); ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(px, py, 4.5, 0, 6.283); ctx.fill(); }
   drawSoldier();
   const f = G.dc.hp / G.dc.max;
@@ -538,7 +578,7 @@ function render() {
     if (tool === 'up' && occ) {
       const lv = occ === G.dc ? G.dcLv : lvOf(occ), max = occ === G.dc ? DC_MAXLV : MAXLV;
       ctx.textAlign = 'center'; ctx.font = 'bold 13px system-ui';
-      const txt = lv >= max ? 'макс. уровень' : '⬆ Ур.' + (lv + 1) + ' — ' + upCost(occ) + '₽', ty = occ === G.dc ? GY + DC0 * CS - 10 : y - 34, tx = occ === G.dc ? GX + (DC0 + 1.5) * CS : x;
+      const ab = ABIL[occ === G.dc ? 'dc' : occ.type], txt = lv >= max ? '★ ' + ab : '⬆ Ур.' + (lv + 1) + ' — ' + upCost(occ) + '₽' + (lv + 1 >= max ? '  ★ ' + ab : ''), ty = occ === G.dc ? GY + DC0 * CS - 10 : y - 34, tx = occ === G.dc ? GX + (DC0 + 1.5) * CS : x;
       const tw = ctx.measureText(txt).width + 12; rr(tx - tw / 2, ty - 14, tw, 20, 5, 'rgba(0,0,0,.75)'); ctx.fillStyle = canUp ? '#ffd23f' : '#ff8a8a'; ctx.fillText(txt, tx, ty);
     }
     if (!(tool === 'up' && occ === G.dc)) { ctx.fillStyle = ok ? 'rgba(90,255,140,.25)' : 'rgba(255,90,90,.2)'; ctx.fillRect(GX + c[0] * CS, GY + c[1] * CS, CS, CS); }
@@ -546,10 +586,10 @@ function render() {
   }
   for (const d of G.drones) drawDrone(d);
   for (const b of G.bullets) {
-    if (b.kind === 'sam') { ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.ang); rect(-6, -2, 12, 4, '#eee'); rect(4, -2, 3, 4, '#d94141'); ctx.fillStyle = '#ffb02e'; ctx.beginPath(); ctx.moveTo(-6, -2); ctx.lineTo(-13 - Math.random() * 4, 0); ctx.lineTo(-6, 2); ctx.fill(); ctx.restore(); }
+    if (b.kind === 'sam') { ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.ang); rect(-6, -2, 12, 4, b.big ? '#ffd0a0' : '#eee'); rect(4, -2, 3, 4, b.big ? '#ff7a3d' : '#d94141'); ctx.fillStyle = '#ffb02e'; ctx.beginPath(); ctx.moveTo(-6, -2); ctx.lineTo(-13 - Math.random() * 4, 0); ctx.lineTo(-6, 2); ctx.fill(); ctx.restore(); }
     else {
-      const col = b.kind === 'player' ? '#fff27a' : b.kind === 'aa' ? '#ff9a2e' : '#ffe08a', k = b.kind === 'aa' ? .05 : .03;
-      ctx.lineCap = 'round'; ctx.strokeStyle = col; ctx.globalAlpha = .35; ctx.lineWidth = 6;
+      const col = b.crit ? '#ff4d4d' : b.pierce ? '#7ee8ff' : b.kind === 'player' ? '#fff27a' : b.kind === 'aa' ? '#ff9a2e' : '#ffe08a', k = b.pierce ? .09 : b.kind === 'aa' ? .05 : .03;
+      ctx.lineCap = 'round'; ctx.strokeStyle = col; ctx.globalAlpha = .35; ctx.lineWidth = b.crit || b.pierce ? 10 : 6;
       ctx.beginPath(); ctx.moveTo(b.x - b.vx * k, b.y - b.vy * k); ctx.lineTo(b.x, b.y); ctx.stroke();
       ctx.globalAlpha = 1; ctx.lineWidth = 2.5; ctx.stroke(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(b.x - b.vx * k * .5, b.y - b.vy * k * .5); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.lineCap = 'butt';
     }
