@@ -45,7 +45,7 @@
 <div id="start" class="ov">
   <h1>Оборона датацентра</h1>
   <p>Над датацентром «Хуяндекс» кружат вражеские БПЛА. Стреляйте сами (мышь или палец) и стройте вокруг защиту. Серверы приносят деньги, на деньги покупаются зенитки, ЗРК, РЭБ и сетки. Если датацентр падёт — это конец.</p>
-  <p style="font-size:13px">Клик/тап по занятой клетке или вне поля — выстрел. Клик по свободной клетке с выбранной постройкой — стройка. Клавиши 1–9 — выбор, Esc/P — пауза.</p>
+  <p style="font-size:13px">Клик/тап по занятой клетке или вне поля — выстрел. Клик по свободной клетке с выбранной постройкой — стройка. Клавиши 1–9 и 0 — выбор, Esc/P — пауза.</p>
   <button class="big" id="go">Начать смену</button>
   <p id="bestTxt" style="font-size:13px"></p>
 </div>
@@ -74,6 +74,7 @@ const TOOLS = [
   { id: 'ew',     icon: '📡', name: 'РЭБ',      cost: 250, hp: 60, range: 135, desc: 'Глушит управление: БПЛА в зоне вдвое медленнее и мечутся.' },
   { id: 'net',    icon: '🕸', name: 'Сетка',    cost: 25,  hp: 40, desc: 'Дёшево. Перехватывает удар БПЛА вместо того, что за ней.' },
   { id: 'repair', icon: '🔧', name: 'Ремонт',   cost: 150, hp: 50, range: 110, desc: 'Чинит постройки и датацентр рядом (6 HP/с). Для датацентра считается расстояние до его края.' },
+  { id: 'up',     icon: '⬆', name: 'Улучшить', cost: 0,   desc: 'Клик по любой постройке или датацентру повышает уровень (постройки до 4, датацентр до 5). Чем выше уровень, тем дороже.' },
   { id: 'sell',   icon: '💲', name: 'Продать',  cost: 0,   desc: 'Клик по постройке возвращает 60% стоимости.' },
 ];
 const TOOL = Object.fromEntries(TOOLS.map(t => [t.id, t]));
@@ -91,11 +92,17 @@ let sc = 1, ox = 0, oy = 0, dpr = 1;
 function reset() {
   G = { t: 0, money: 100, wave: 0, nextWave: 6, servers: 0, spent: 0, kills: 0,
         grid: Array.from({ length: N }, () => Array(N).fill(null)),
-        drones: [], bullets: [], fx: [], queue: [], gunCd: 0, flash: 0, won: {}, sol: { ang: -1.57, fl: 0, rc: 0 } };
+        drones: [], bullets: [], fx: [], queue: [], gunCd: 0, flash: 0, won: {}, dcLv: 1, income: 0, sol: { ang: -1.57, fl: 0, rc: 0 } };
   G.dc = { type: 'dc', hp: 400, max: 400, cx: DC0 + 1, cy: DC0 + 1 };
   for (let y = DC0; y < DC0 + 3; y++) for (let x = DC0; x < DC0 + 3; x++) G.grid[y][x] = G.dc;
   setTool('fire');
 }
+const MAXLV = 4, DC_MAXLV = 5;
+const lvOf = b => b.lv || 1;
+const baseCost = b => b.type === 'server' ? 50 : TOOL[b.type].cost;
+const upCost = b => b === G.dc ? 300 * G.dcLv : Math.round(baseCost(b) * .9 * lvOf(b));
+const rangeOf = b => TOOL[b.type].range * (1 + (b.type === 'ew' ? .15 : b.type === 'repair' ? .1 : .08) * (lvOf(b) - 1));
+const dmgMul = b => 1 + .35 * (lvOf(b) - 1), rateMul = b => 1 + .2 * (lvOf(b) - 1);
 const serverCost = () => 50 + 16 * G.servers;
 const costOf = id => id === 'server' ? serverCost() : TOOL[id].cost;
 
@@ -103,7 +110,7 @@ const costOf = id => id === 'server' ? serverCost() : TOOL[id].cost;
 const barEl = $('bar');
 TOOLS.forEach((t, i) => {
   const b = document.createElement('div'); b.className = 'tool'; b.id = 't_' + t.id;
-  b.innerHTML = `<b>${t.icon}</b>${i + 1}. ${t.name}<br><span class="c"></span>`;
+  b.innerHTML = `<b>${t.icon}</b>${(i + 1) % 10}. ${t.name}<br><span class="c"></span>`;
   b.onclick = () => setTool(t.id);
   barEl.appendChild(b);
 });
@@ -150,7 +157,7 @@ const up = () => { ptr.down = false; };
 cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
 addEventListener('keydown', e => {
   if (e.code === 'Escape' || e.code === 'KeyP') { togglePause(); return; }
-  const d = +e.key; if (d >= 1 && d <= TOOLS.length && state === 'play') setTool(TOOLS[d - 1].id);
+  const d = e.key === '0' ? 10 : +e.key; if (d >= 1 && d <= TOOLS.length && state === 'play') setTool(TOOLS[d - 1].id);
 });
 
 // стройка/продажа; true, если действие выполнено
@@ -160,6 +167,18 @@ function click(cx, cy) {
     if (!b || b === G.dc) return false;
     G.money += Math.floor(b.paid * .6); if (b.type === 'server') G.servers--;
     G.grid[cy][cx] = null; boom(...cellC(cx, cy), 20, '#9ad'); return true;
+  }
+  if (tool === 'up') {
+    if (!b) return false;
+    const dc = b === G.dc, lv = dc ? G.dcLv : lvOf(b), max = dc ? DC_MAXLV : MAXLV, [fx, fy] = dc ? cellC(G.dc.cx, G.dc.cy - 1) : cellC(cx, cy);
+    if (lv >= max) { floatText(fx, fy, 'максимум', '#ffd23f'); return true; }
+    const cost = upCost(b);
+    if (cost > G.money) { floatText(fx, fy, 'не хватает ₽', '#ff8a8a'); return true; }
+    G.money -= cost;
+    if (dc) { G.dcLv++; b.max += 150; b.hp += 150; }
+    else { b.paid += cost; b.lv = lv + 1; const nm = Math.round(TOOL[b.type].hp * (1 + .25 * (b.lv - 1))); b.hp += nm - b.max; b.max = nm; }
+    floatText(fx, fy, '⬆ Ур. ' + (lv + 1), '#ffd23f'); boom(fx, fy, 24, '#ffe27a');
+    return true;
   }
   if (tool === 'fire' || b) return false;
   const cost = costOf(tool);
@@ -235,7 +254,7 @@ function shoot(x, y, ang, spd, dmg, kind, target) {
 function update(dt) {
   G.t += dt;
   G.flash = Math.max(0, G.flash - dt);
-  G.money += G.servers * 2 * dt;
+  G.money += G.income * dt;
   if ((G.nextWave -= dt) <= 0) startWave();
   for (let i = G.queue.length - 1; i >= 0; i--) if (G.queue[i].t <= G.t) { spawnDrone(G.queue[i].type); G.queue.splice(i, 1); }
 
@@ -250,19 +269,21 @@ function update(dt) {
   if (aim) {
     S.ang = Math.atan2(aim[1] - sy, aim[0] - sx);
     if (G.gunCd <= 0) {
-      G.gunCd = manual ? .17 : .3; S.fl = .07; S.rc = 1;
+      G.gunCd = (manual ? .17 : .3) / (1 + .12 * (G.dcLv - 1)); S.fl = .07; S.rc = 1;
       const mx = sx + Math.cos(S.ang) * 34, my = sy + Math.sin(S.ang) * 34;
-      shoot(mx, my, S.ang + rnd(-.03, .03), 560, 2, 'player');
+      shoot(mx, my, S.ang + rnd(-.03, .03), 560, 2 * (1 + .3 * (G.dcLv - 1)), 'player');
       G.fx.push({ k: 'p', x: sx, y: sy, vx: -Math.sin(S.ang) * 70 + rnd(-15, 15), vy: Math.cos(S.ang) * 70 + rnd(-15, 15), life: .4, max: .4, col: '#ffd23f' });
     }
   }
 
   // РЭБ — сброс и применение
+  let inc = 1 * (G.dcLv - 1);   // датацентр с уровнем сам приносит доход
   for (const d of G.drones) { d.slow = 1; d.jam = 0; }
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
     const b = G.grid[y][x]; if (!b || b === G.dc || b.cx !== x || b.cy !== y) continue;
     const [bx, by] = cellC(x, y), T = TOOL[b.type];
-    if (b.type === 'ew') { for (const d of G.drones) if (Math.hypot(d.x - bx, d.y - by) < T.range) { d.slow = .5; d.jam = 1; } }
+    if (b.type === 'server') inc += 2 * (1 + .6 * (lvOf(b) - 1));
+    else if (b.type === 'ew') { for (const d of G.drones) if (Math.hypot(d.x - bx, d.y - by) < rangeOf(b)) { d.slow = Math.min(d.slow, .5 - .07 * (lvOf(b) - 1)); d.jam = 1; } }
     else if (b.type === 'repair') {
       const healed = new Set();
       for (let yy = 0; yy < N; yy++) for (let xx = 0; xx < N; xx++) {
@@ -270,24 +291,26 @@ function update(dt) {
         const [px, py] = cellC(xx, yy);
         // до датацентра считаем расстояние до ближайшей точки его 3×3 клеток, а не до центра
         const dd = o === G.dc ? Math.hypot(Math.max(GX + DC0 * CS - bx, 0, bx - (GX + (DC0 + 3) * CS)), Math.max(GY + DC0 * CS - by, 0, by - (GY + (DC0 + 3) * CS))) : Math.hypot(px - bx, py - by);
-        if (dd < T.range) {
-          healed.add(o); o.hp = Math.min(o.max, o.hp + 6 * dt);
+        if (dd < rangeOf(b)) {
+          healed.add(o); o.hp = Math.min(o.max, o.hp + 6 * (1 + .5 * (lvOf(b) - 1)) * dt);
           if (Math.random() < dt * 3) G.fx.push({ k: 'txt', x: o === G.dc ? bx + rnd(-30, 30) : px + rnd(-10, 10), y: o === G.dc ? by - 20 : py - 14, text: '+', col: '#6bff9a', life: .7, max: .7 });
         }
       }
     } else if (b.type === 'mg' || b.type === 'aa' || b.type === 'sam') {
       b.cd -= dt; b.fl = Math.max(0, (b.fl || 0) - dt); b.rc = Math.max(0, (b.rc || 0) - dt * 10);
-      const tg = nearestDrone(bx, by, T.range);
+      const tg = nearestDrone(bx, by, rangeOf(b));
       if (tg) {
         b.ang = Math.atan2(tg.y - by, tg.x - bx);
         if (b.cd <= 0) {
-          if (b.type === 'mg') { b.cd = .12; b.fl = .06; b.rc = 1; shoot(bx, by, b.ang + rnd(-.05, .05), 480, 1, 'mg'); }
-          else if (b.type === 'aa') { b.cd = .5; b.fl = .07; b.rc = 1; b.alt ^= 1; const s = b.alt ? 5 : -5, px = -Math.sin(b.ang) * s, py = Math.cos(b.ang) * s; shoot(bx + px, by + py, b.ang, 540, 3.2, 'aa'); }
-          else { b.cd = 1.6; b.fl = .12; b.rc = 1; shoot(bx, by, b.ang, 230, 9, 'sam', tg); }
+          if (b.type === 'mg') { b.cd = .12 / rateMul(b); b.fl = .06; b.rc = 1; shoot(bx, by, b.ang + rnd(-.05, .05), 480, 1 * dmgMul(b), 'mg'); }
+          else if (b.type === 'aa') { b.cd = .5 / rateMul(b); b.fl = .07; b.rc = 1; b.alt ^= 1; const s = b.alt ? 5 : -5, px = -Math.sin(b.ang) * s, py = Math.cos(b.ang) * s; shoot(bx + px, by + py, b.ang, 540, 3.2 * dmgMul(b), 'aa'); }
+          else { b.cd = 1.6 / rateMul(b); b.fl = .12; b.rc = 1; shoot(bx, by, b.ang, 230, 9 * dmgMul(b), 'sam', tg); }
         }
       }
     }
   }
+
+  G.income = inc;
 
   // пули
   for (const b of G.bullets) {
@@ -421,6 +444,7 @@ function drawBuilding(b, cx, cy) {
       break; }
   }
   ctx.restore();
+  for (let i = 1; i < lvOf(b); i++) { const px = x - 22 + (i - 1) * 9, py = y - 26; ctx.fillStyle = '#5a3d00'; ctx.beginPath(); ctx.arc(px, py, 4.5, 0, 6.283); ctx.fill(); ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(px, py, 3.2, 0, 6.283); ctx.fill(); }
   if (b.hp < b.max) { rect(x - 20, y + 26, 40, 5, '#000'); rect(x - 19, y + 27, 38 * Math.max(0, b.hp / b.max), 3, b.hp / b.max < .35 ? '#e05a5a' : '#3ec27a'); }
 }
 function soldierPos() { return [GX + DC0 * CS + CS * 1.5, GY + DC0 * CS + 84]; }
@@ -464,6 +488,7 @@ function drawDC() {
   for (const [t, c] of parts) { ctx.fillStyle = c; ctx.fillText(t, tx, y0 + 149); tx += ctx.measureText(t).width; }
   ctx.textAlign = 'center';
   rect(x0 + w - 24, y0 + 40, 3, 26, '#555'); ctx.fillStyle = Math.sin(G.t * 5) > 0 ? '#ff4d4d' : '#6a2323'; ctx.beginPath(); ctx.arc(x0 + w - 22.5, y0 + 40, 3, 0, 6.283); ctx.fill();
+  for (let i = 1; i < G.dcLv; i++) { const px = x0 + 20 + (i - 1) * 14, py = y0 + 62; ctx.fillStyle = '#5a3d00'; ctx.beginPath(); ctx.arc(px, py, 6, 0, 6.283); ctx.fill(); ctx.fillStyle = '#ffd23f'; ctx.beginPath(); ctx.arc(px, py, 4.5, 0, 6.283); ctx.fill(); }
   drawSoldier();
   const f = G.dc.hp / G.dc.max;
   if (f < .6) for (let i = 0; i < 3; i++) { ctx.fillStyle = `rgba(30,30,30,${.4 + .2 * Math.sin(G.t * 3 + i)})`; ctx.beginPath(); ctx.arc(x0 + 40 + i * 44 + Math.sin(G.t * 2 + i) * 4, y0 + 30 - (G.t * 20 + i * 15) % 30, 12 + i * 2, 0, 6.283); ctx.fill(); }
@@ -505,9 +530,16 @@ function render() {
   const c = cellAt(ptr.x, ptr.y);
   if (c && tool !== 'fire') {
     const [x, y] = cellC(c[0], c[1]), occ = G.grid[c[1]][c[0]];
-    const ok = tool === 'sell' ? occ && occ !== G.dc : !occ && costOf(tool) <= G.money;
-    ctx.fillStyle = ok ? 'rgba(90,255,140,.25)' : 'rgba(255,90,90,.2)'; ctx.fillRect(GX + c[0] * CS, GY + c[1] * CS, CS, CS);
-    if (TOOL[tool].range && !occ) { ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, TOOL[tool].range, 0, 6.283); ctx.stroke(); }
+    const canUp = occ && (occ === G.dc ? G.dcLv < DC_MAXLV : lvOf(occ) < MAXLV) && upCost(occ) <= G.money;
+    const ok = tool === 'sell' ? occ && occ !== G.dc : tool === 'up' ? canUp : !occ && costOf(tool) <= G.money;
+    if (tool === 'up' && occ) {
+      const lv = occ === G.dc ? G.dcLv : lvOf(occ), max = occ === G.dc ? DC_MAXLV : MAXLV;
+      ctx.textAlign = 'center'; ctx.font = 'bold 13px system-ui';
+      const txt = lv >= max ? 'макс. уровень' : '⬆ Ур.' + (lv + 1) + ' — ' + upCost(occ) + '₽', ty = occ === G.dc ? GY + DC0 * CS - 10 : y - 34, tx = occ === G.dc ? GX + (DC0 + 1.5) * CS : x;
+      const tw = ctx.measureText(txt).width + 12; rr(tx - tw / 2, ty - 14, tw, 20, 5, 'rgba(0,0,0,.75)'); ctx.fillStyle = canUp ? '#ffd23f' : '#ff8a8a'; ctx.fillText(txt, tx, ty);
+    }
+    if (!(tool === 'up' && occ === G.dc)) { ctx.fillStyle = ok ? 'rgba(90,255,140,.25)' : 'rgba(255,90,90,.2)'; ctx.fillRect(GX + c[0] * CS, GY + c[1] * CS, CS, CS); }
+    if (TOOL[tool].range && !occ && tool !== 'up') { ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, TOOL[tool].range, 0, 6.283); ctx.stroke(); }
   }
   for (const d of G.drones) drawDrone(d);
   for (const b of G.bullets) {
@@ -534,11 +566,11 @@ function render() {
   if (tool === 'fire' && ptr.x > -900) { ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(ptr.x, ptr.y, 9, 0, 6.283); ctx.moveTo(ptr.x - 14, ptr.y); ctx.lineTo(ptr.x + 14, ptr.y); ctx.moveTo(ptr.x, ptr.y - 14); ctx.lineTo(ptr.x, ptr.y + 14); ctx.stroke(); }
 }
 function hud() {
-  $('money').textContent = Math.floor(G.money); $('inc').textContent = G.servers * 2;
+  $('money').textContent = Math.floor(G.money); $('inc').textContent = (Math.round(G.income * 10) / 10);
   $('wave').textContent = G.wave; $('next').textContent = Math.max(0, Math.ceil(G.nextWave));
   const f = Math.max(0, G.dc.hp / G.dc.max);
   $('dcfill').style.width = f * 100 + '%'; $('dcfill').style.background = f < .3 ? '#e05a5a' : f < .6 ? '#e8b04a' : '#3ec27a';
-  $('dctxt').textContent = 'Датацентр ' + Math.ceil(Math.max(0, G.dc.hp)) + ' / ' + G.dc.max;
+  $('dctxt').textContent = 'Датацентр ур.' + G.dcLv + ' ' + Math.ceil(Math.max(0, G.dc.hp)) + ' / ' + G.dc.max;
   updateBar();
 }
 
