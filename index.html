@@ -50,6 +50,7 @@
   <p id="bestTxt" style="font-size:13px"></p>
 </div>
 <div id="pause" class="ov hidden"><h1>Пауза</h1><button class="big" id="resume">Продолжить</button></div>
+<div id="win" class="ov hidden"><h1 id="winTitle"></h1><p id="winTxt"></p><button class="big" id="winGo">Продолжить играть</button><button class="big" id="winNew" style="background:#34406b;color:#fff;font-size:15px">Начать заново</button></div>
 <div id="over" class="ov hidden"><h1>Датацентр потерян</h1><p id="stats"></p><button class="big" id="again">Ещё раз</button></div>
 
 <script>
@@ -90,7 +91,7 @@ let sc = 1, ox = 0, oy = 0, dpr = 1;
 function reset() {
   G = { t: 0, money: 100, wave: 0, nextWave: 6, servers: 0, spent: 0, kills: 0,
         grid: Array.from({ length: N }, () => Array(N).fill(null)),
-        drones: [], bullets: [], fx: [], queue: [], gunCd: 0, flash: 0, sol: { ang: -1.57, fl: 0, rc: 0 } };
+        drones: [], bullets: [], fx: [], queue: [], gunCd: 0, flash: 0, won: {}, sol: { ang: -1.57, fl: 0, rc: 0 } };
   G.dc = { type: 'dc', hp: 400, max: 400, cx: DC0 + 1, cy: DC0 + 1 };
   for (let y = DC0; y < DC0 + 3; y++) for (let x = DC0; x < DC0 + 3; x++) G.grid[y][x] = G.dc;
   setTool('fire');
@@ -531,21 +532,37 @@ function hud() {
 }
 
 // ---------- ход игры ----------
+// ---------- победы (игра продолжается после них) ----------
+const WINS = {
+  money: { title: '🇰🇿 Переезд в Казахстан!', text: 'Вы накопили 20 000 ₽ — хватит, чтобы закрыть смену, собрать вещи и переехать в Казахстан. Датацентр доверяем коллегам.' },
+  wave:  { title: '🛡 Оборона успешна!', text: 'Вы удержали датацентр больше 50 волн. Небо над ним теперь чистое, а начальство довольно.' },
+};
+function checkWin() {
+  const k = !G.won.money && G.money >= 20000 ? 'money' : !G.won.wave && G.wave > 50 ? 'wave' : null;
+  if (!k) return;
+  G.won[k] = true; state = 'win';
+  $('winTitle').textContent = WINS[k].title;
+  $('winTxt').innerHTML = WINS[k].text + '<br><br>Можно продолжить и поставить новый рекорд.';
+  $('win').classList.remove('hidden');
+}
 function mmss(s) { return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(Math.floor(s % 60)).padStart(2, '0'); }
 function endGame() {
   state = 'over';
   const rec = G.wave > best; if (rec) { best = G.wave; lsSet('dc-best', best); }
-  $('stats').innerHTML = `Продержались: <b>${mmss(G.t)}</b><br>Волн отражено: <b>${Math.max(0, G.wave - 1)}</b>${rec ? ' — новый рекорд!' : ''}<br>Сбито БПЛА: <b>${G.kills}</b>`;
+  $('stats').innerHTML = `Продержались: <b>${mmss(G.t)}</b><br>Волн отражено: <b>${Math.max(0, G.wave - 1)}</b>${rec ? ' — новый рекорд!' : ''}<br>Сбито БПЛА: <b>${G.kills}</b>` +
+    (G.won.money ? '<br>🇰🇿 Переехали в Казахстан' : '') + (G.won.wave ? '<br>🛡 Оборона была успешной' : '');
   $('over').classList.remove('hidden');
 }
 function begin() {
   reset(); resize(); state = 'play';
-  for (const id of ['start', 'over', 'pause']) $(id).classList.add('hidden');
+  for (const id of ['start', 'over', 'pause', 'win']) $(id).classList.add('hidden');
 }
 function togglePause() {
   if (state === 'play') { state = 'pause'; $('pause').classList.remove('hidden'); }
   else if (state === 'pause') { state = 'play'; $('pause').classList.add('hidden'); }
 }
+$('winGo').onclick = () => { $('win').classList.add('hidden'); state = 'play'; };
+$('winNew').onclick = begin;
 $('go').onclick = begin; $('again').onclick = begin; $('resume').onclick = togglePause; $('pauseBtn').onclick = togglePause;
 document.addEventListener('visibilitychange', () => { if (document.hidden && state === 'play') togglePause(); });
 $('bestTxt').textContent = best ? 'Рекорд: ' + best + ' волн' : '';
@@ -553,7 +570,7 @@ $('bestTxt').textContent = best ? 'Рекорд: ' + best + ' волн' : '';
 let last = 0;
 function frame(ts) {
   const dt = Math.min(.05, (ts - last) / 1000 || 0); last = ts;
-  if (state === 'play') update(dt);
+  if (state === 'play') { update(dt); if (state === 'play') checkWin(); }
   if (G) { render(); hud(); }
   requestAnimationFrame(frame);
 }
