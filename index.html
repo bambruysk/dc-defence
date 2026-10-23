@@ -44,7 +44,7 @@
 
 <div id="start" class="ov">
   <h1>Оборона датацентра</h1>
-  <p>Над датацентром «Яндекс» кружат вражеские БПЛА. Стреляйте сами (мышь или палец) и стройте вокруг защиту. Серверы приносят деньги, на деньги покупаются зенитки, ЗРК, РЭБ и сетки. Если датацентр падёт — это конец.</p>
+  <p>Над датацентром «Хуяндекс» кружат вражеские БПЛА. Стреляйте сами (мышь или палец) и стройте вокруг защиту. Серверы приносят деньги, на деньги покупаются зенитки, ЗРК, РЭБ и сетки. Если датацентр падёт — это конец.</p>
   <p style="font-size:13px">Клик/тап по занятой клетке или вне поля — выстрел. Клик по свободной клетке с выбранной постройкой — стройка. Клавиши 1–9 — выбор, Esc/P — пауза.</p>
   <button class="big" id="go">Начать смену</button>
   <p id="bestTxt" style="font-size:13px"></p>
@@ -450,8 +450,12 @@ function drawDC() {
     ctx.strokeStyle = ['#4aa3e8', '#7be08a', '#e8b04a', '#e86aa8'][i]; ctx.lineWidth = 3;
     for (let k = 0; k < 3; k++) { const a = G.t * 7 + i + k * 2.094; ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(fx + Math.cos(a) * 11, fy + Math.sin(a) * 11); ctx.stroke(); }
   }
-  rr(x0 + 14, y0 + 124, w - 28, 34, 5, '#c63a3a'); rect(x0 + 14, y0 + 124, w - 28, 5, '#ff8080'); rect(x0 + 14, y0 + 153, w - 28, 5, '#8c2323');
-  ctx.fillStyle = '#fff'; ctx.font = 'bold 16px system-ui'; ctx.textAlign = 'center'; ctx.fillText('ЯНДЕКС ДЦ', x0 + w / 2, y0 + 147);
+  rr(x0 + 14, y0 + 124, w - 28, 34, 5, '#f4f4f2'); rect(x0 + 14, y0 + 153, w - 28, 5, '#c9c9c4');   // вывеска: белая табличка
+  ctx.font = '600 24px "Yandex Sans Display", "Helvetica Neue", Helvetica, Arial, sans-serif'; ctx.textAlign = 'left';
+  const parts = [['Ху', '#1b1b1b'], ['я', '#fc3f1d'], ['ндекс', '#1b1b1b']], tw = parts.reduce((a, p) => a + ctx.measureText(p[0]).width, 0);
+  let tx = x0 + w / 2 - tw / 2;
+  for (const [t, c] of parts) { ctx.fillStyle = c; ctx.fillText(t, tx, y0 + 149); tx += ctx.measureText(t).width; }
+  ctx.textAlign = 'center';
   rect(x0 + w - 24, y0 + 40, 3, 26, '#555'); ctx.fillStyle = Math.sin(G.t * 5) > 0 ? '#ff4d4d' : '#6a2323'; ctx.beginPath(); ctx.arc(x0 + w - 22.5, y0 + 40, 3, 0, 6.283); ctx.fill();
   drawSoldier();
   const f = G.dc.hp / G.dc.max;
